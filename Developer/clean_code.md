@@ -140,6 +140,213 @@ public function processFile(string $path): void
 }
 ```
 
+## Архитектурные паттерны в Laravel
+
+Чтобы код оставался чистым и структурированным, важно правильно распределять логику по разным классам. Ниже описаны основные паттерны, используемые в проекте.
+
+### 1. Actions
+
+*   **Что это?**
+    Классы, которые выполняют одну конкретную, атомарную задачу. Они не зависят от HTTP-контекста и могут быть переиспользованы в разных частях приложения (контроллерах, сервисах, консольных командах).
+
+*   **Правила:**
+    *   Название класса — глагол в повелительном наклонении (`CreateOrder`, `SendInvoiceEmail`).
+    *   Содержат один публичный метод, как правило `handle()` или `execute()`.
+    *   Легко тестируются (идеальны для unit-тестов).
+    *   Не должны содержать сложную бизнес-логику или вызывать другие Actions/Services.
+
+*   **Когда применять?**
+    *   Для простых, одноразовых операций: `UpdateProductPriceAction`, `SendUserNotificationAction`.
+    *   Для изоляции логики, чтобы не перегружать контроллеры.
+
+*   **Пример:**
+    ```php
+    class CreateOrderAction
+    {
+        public function handle(OrderData $data): Order
+        {
+            return Order::create($data->toArray());
+        }
+    }
+    ```
+
+### 2. Services
+
+*   **Что это?**
+    Классы, которые оркестрируют сложную бизнес-логику, состоящую из нескольких шагов. Они могут вызывать Actions или другие Services, управлять транзакциями и реализовывать полноценные бизнес-процессы.
+
+*   **Правила:**
+    *   Описывают правила бизнеса.
+    *   Абстрагируют логику от HTTP-контекста.
+    *   Не должны быть привязаны к `request()` или `session()`.
+
+*   **Когда применять?**
+    *   Для многошаговых процессов: создание заказа (проверка, расчёт, оплата), обработка возврата.
+    *   Когда нужно управлять транзакциями (`DB::transaction`).
+
+*   **Пример:**
+    ```php
+    class OrderService
+    {
+        public function checkout(User $user, Cart $cart): Order
+        {
+            // Пример вызова Action внутри сервиса
+            $order = app(CreateOrderAction::class)->handle(OrderData::fromCart($cart));
+
+            // Ещё одна задача
+            app(SendInvoiceEmailAction::class)->handle($user, $order);
+
+            return $order;
+        }
+    }
+    ```
+    **Итог: Actions для простых задач, Services для сложных бизнес-процессов.**
+
+### 3. Repositories
+
+*   **Что это?**
+    Классы, которые инкапсулируют логику запросов к базе данных. Они служат слоем-посредником между моделями Eloquent и бизнес-логикой.
+
+*   **Когда применять?**
+    *   Когда запросы к БД становятся сложными и повторяющимися.
+    *   Чтобы абстрагироваться от Eloquent и сделать код более тестируемым.
+    *   Чтобы держать модели "чистыми" от логики запросов.
+
+*   **Пример:**
+    ```php
+    class ProductRepository
+    {
+        public function getAvailableByCategory(int $categoryId): Collection
+        {
+            return Product::where('category_id', $categoryId)
+                ->where('quantity', '>', 0)
+                ->get();
+        }
+    }
+    ```
+
+### 4. DTO (Data Transfer Objects)
+
+*   **Что это?**
+    Простые объекты, предназначенные для передачи структурированных данных между слоями приложения (например, от `FormRequest` к `Action` или `Service`). Они помогают избежать передачи больших массивов и делают код более читаемым и типизированным.
+
+*   **Правила:**
+    *   Название = `EntityData` (например, `OrderData`).
+    *   Часто создаются из `FormRequest`.
+    *   Содержат только публичные свойства и, возможно, простые методы для преобразования данных.
+
+*   **Пример:**
+    ```php
+    class OrderData
+    {
+        public function __construct(
+            public int $userId,
+            public array $items,
+            public string $address
+        ) {}
+
+        public static function fromRequest(CreateOrderRequest $request): self
+        {
+            return new self(
+                userId: $request->user()->id,
+                items: $request->validated('items'),
+                address: $request->validated('address'),
+            );
+        }
+
+        public function toArray(): array
+        {
+            return get_object_vars($this);
+        }
+    }
+    ```
+
+### 5. Controllers
+
+*   **Что это?**
+    "Тонкий" слой, отвечающий только за обработку HTTP-запроса и возврат ответа.
+
+*   **Правила:**
+    *   Минимум логики.
+    *   Делегирует всю работу `Actions` или `Services`.
+    *   Использует `FormRequest` для валидации и DTO для передачи данных.
+
+*   **Пример:**
+    ```php
+    class OrderController extends Controller
+    {
+        public function store(CreateOrderRequest $request, OrderService $service)
+        {
+            // DTO создаётся из запроса
+            $orderData = OrderData::fromRequest($request);
+
+            // Сервис выполняет всю работу
+            $order = $service->checkout($request->user(), $orderData);
+
+            return new OrderResource($order);
+        }
+    }
+    ```
+
+## Принципы SOLID в Laravel
+
+SOLID — это акроним для пяти основных принципов объектно-ориентированного проектирования, которые помогают создавать более понятные, гибкие и поддерживаемые приложения.
+
+### S — Принцип единственной ответственности (Single Responsibility)
+
+*   **Суть:** Класс должен иметь только одну причину для изменения.
+*   **Применение в Laravel:** Этот принцип уже был упомянут выше. Контроллер отвечает за HTTP, Form Request — за валидацию, Action — за атомарную операцию, Service — за бизнес-процесс. Не смешивайте эти ответственности.
+
+### O — Принцип открытости/закрытости (Open/Closed)
+
+*   **Суть:** Программные сущности (классы, модули) должны быть открыты для расширения, но закрыты для модификации.
+*   **Применение в Laravel:** Вместо изменения существующего класса с помощью `if/else`, добавляйте новое поведение через новые классы.
+    *   **Пример:** У вас есть `CheckoutService` для обработки платежей. Вместо того чтобы редактировать его для добавления нового способа оплаты (Stripe, PayPal), создайте интерфейс `PaymentGateway` и его реализации. Сервис-контейнер Laravel позволит легко "подменять" реализации, не изменяя код `CheckoutService`.
+    ```php
+    // Bad: modifying the class
+    class CheckoutService {
+        public function pay(string $method) {
+            if ($method === 'stripe') { /* Stripe logic */ }
+            if ($method === 'paypal') { /* PayPal logic */ }
+        }
+    }
+
+    // Good: extending with new classes
+    interface PaymentGateway { public function charge(int $amount); }
+    class StripeGateway implements PaymentGateway { /* ... */ }
+    class PayPalGateway implements PaymentGateway { /* ... */ }
+
+    // В сервис-провайдере вы связываете интерфейс с нужной реализацией
+    $this->app->bind(PaymentGateway::class, StripeGateway::class);
+    ```
+
+### L — Принцип подстановки Барбары Лисков (Liskov Substitution)
+
+*   **Суть:** Объекты в программе должны быть заменяемы на экземпляры их подтипов без изменения правильности выполнения программы.
+*   **Применение в Laravel:** Если класс `StripeGateway` реализует интерфейс `PaymentGateway`, он должен вести себя ожидаемо. Его метод `charge()` не должен внезапно возвращать `string` вместо `bool` или требовать другие параметры. Использование интерфейсов и строгой типизации в PHP помогает соблюдать этот принцип.
+
+### I — Принцип разделения интерфейса (Interface Segregation)
+
+*   **Суть:** Лучше много маленьких, специфических интерфейсов, чем один большой и универсальный. Клиенты не должны быть вынуждены реализовывать методы, которые они не используют.
+*   **Применение в Laravel:** Если у вас есть `NotificationService`, не создавайте один громоздкий интерфейс `Notifiable` с методами `sendEmail()`, `sendSms()`, `sendPush()`. Разделите их на `EmailNotifiable`, `SmsNotifiable` и т.д. Классы будут реализовывать только те интерфейсы, которые им действительно нужны.
+
+### D — Принцип инверсии зависимостей (Dependency Inversion)
+
+*   **Суть:** Модули верхних уровней не должны зависеть от модулей нижних уровней. Оба должны зависеть от абстракций (интерфейсов). Абстракции не должны зависеть от деталей. Детали должны зависеть от абстракций.
+*   **Применение в Laravel:** Это основа сервис-контейнера Laravel. Никогда не внедряйте в конструктор конкретный класс, если можно использовать интерфейс.
+    ```php
+    // Bad: зависимость от конкретного класса
+    class OrderController extends Controller {
+        public function __construct(private StripeGateway $paymentGateway) {}
+    }
+
+    // Good: зависимость от абстракции (интерфейса)
+    class OrderController extends Controller {
+        public function __construct(private PaymentGateway $paymentGateway) {}
+    }
+    ```
+    Это делает ваш код гибким. Завтра вы сможете легко переключиться на `PayPalGateway` в сервис-провайдере, и `OrderController` даже не "узнает" об этом.
+
 ## Ключевые принципы чистого кода в Laravel
 
 ### 1. Тонкие контроллеры, "толстые" модели/сервисы
