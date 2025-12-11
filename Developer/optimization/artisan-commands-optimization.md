@@ -60,10 +60,12 @@ php artisan schedule:run
 
 2. Тяжёлые зависимости переносить в метод handle():
 
+```php
 public function handle()
 {
     $api = app(NovaPoshtaApi2::class);
 }
+```
 
 3. Тяжёлыми считаются:
    - API/HTTP клиенты
@@ -76,12 +78,14 @@ public function handle()
 
 4. Можно использовать ленивую загрузку:
 
+```php
 protected ?NovaPoshtaApi2 $api = null;
 
 protected function api()
 {
     return $this->api ??= app(NovaPoshtaApi2::class);
 }
+```
 
 --------------------------------------------
 РЕЗУЛЬТАТ
